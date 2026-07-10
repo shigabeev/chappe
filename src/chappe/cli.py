@@ -1226,7 +1226,7 @@ def posts_timing(
     limit: int = typer.Option(10, "--limit", help="Maximum timing buckets to return."),
 ) -> None:
     def run():
-        posts = filter_posts_by_period(_store(ctx).list_posts(channel, limit=5000), period)
+        posts = filter_posts_by_period(_store(ctx).list_posts(channel, limit=10000), period)
         timing = post_timing_analysis(posts, timezone_name=timezone_name, limit=limit)
         _emit(
             ctx,
@@ -1251,7 +1251,7 @@ def posts_velocity(
 ) -> None:
     def run():
         store = _store(ctx)
-        posts = filter_posts_by_period(store.list_posts(channel, limit=5000), period)
+        posts = filter_posts_by_period(store.list_posts(channel, limit=10000), period)
         snapshots = store.list_post_snapshots(channel)
         velocity = share_velocity_analysis(posts, snapshots, limit=limit)
         _emit(
@@ -1289,6 +1289,11 @@ def comments_mine(
     channel: str,
     period: str = typer.Option("180d", "--period", help="Requested period label."),
     limit: int = typer.Option(100, "--limit", help="Maximum comments to inspect."),
+    question_limit: int = typer.Option(
+        20,
+        "--question-limit",
+        help="Maximum audience questions to return.",
+    ),
 ) -> None:
     def run():
         comments = _store(ctx).list_comments(channel, limit=limit)
@@ -1302,7 +1307,7 @@ def comments_mine(
                 "period": period,
                 "comments_scanned": len(comments),
                 "top_terms": terms,
-                "questions": questions[:20],
+                "questions": questions[: max(0, question_limit)],
                 "next_command": f"chappe post report {channel} <post_id>" if not comments else None,
             },
         )
@@ -1334,8 +1339,8 @@ def briefing(
 ) -> None:
     def run():
         store = _store(ctx)
-        posts = store.list_posts(channel, limit=1000)
-        comments = store.list_comments(channel, limit=1000)
+        posts = store.list_posts(channel)
+        comments = store.list_comments(channel)
         snapshots = store.list_post_snapshots(channel)
         top = rank_posts(posts, by="engagement", limit=20)
         data_quality = _briefing_data_quality(posts, comments)

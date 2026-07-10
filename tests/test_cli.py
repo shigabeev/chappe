@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import chappe.cli as cli
@@ -163,6 +164,39 @@ def test_briefing_includes_data_quality_and_contract(tmp_path):
     assert '"share_velocity":' in result.stdout
     assert '"comments_available": 1' in result.stdout
     assert '"commented_posts_available": 1' in result.stdout
+
+
+def test_comments_mine_can_return_more_than_twenty_questions(tmp_path):
+    store_path = tmp_path / ".local" / "share" / "chappe" / "chappe.db"
+    Store(store_path).upsert_comments(
+        "@nn_for_science",
+        "1",
+        [
+            {
+                "id": f"c{index}",
+                "date": f"2026-01-{(index % 28) + 1:02d}T00:00:00+00:00",
+                "text": f"Question {index}?",
+            }
+            for index in range(25)
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "comments",
+            "mine",
+            "@nn_for_science",
+            "--limit",
+            "100",
+            "--question-limit",
+            "25",
+        ],
+        env={"CHAPPE_HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert len(json.loads(result.stdout)["questions"]) == 25
 
 
 def test_compare_requires_at_least_two_channels(tmp_path):
