@@ -111,3 +111,36 @@ def test_tdlib_client_disables_native_logs(monkeypatch, tmp_path):
     gateway._ensure_client()
 
     assert fake.executed[0] == {"@type": "setLogVerbosityLevel", "new_verbosity_level": 0}
+
+
+def test_configure_restarts_client_after_logout_finishes(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_API_ID", "123")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+    gateway = TDLibGateway(ChappeConfig.load(tmp_path / "config.toml"))
+    gateway._tdjson = object()
+    gateway._client = 1
+    gateway._last_authorization_state = {"@type": "authorizationStateLoggingOut"}
+    states = iter(
+        [
+            {"@type": "authorizationStateLoggingOut"},
+            {"@type": "authorizationStateWaitPhoneNumber"},
+        ]
+    )
+
+    def fake_send(query, *, timeout=20.0):
+        assert query == {"@type": "getAuthorizationState"}
+        return next(states)
+
+    def fake_wait(current_type, *, timeout=20.0):
+        assert current_type == "authorizationStateLoggingOut"
+        return {"@type": "authorizationStateClosed"}
+
+    monkeypatch.setattr(gateway, "send", fake_send)
+    monkeypatch.setattr(gateway, "wait_for_authorization_state_change", fake_wait)
+
+    state = gateway.configure()
+
+    assert state == {"@type": "authorizationStateWaitPhoneNumber"}
+    assert gateway._tdjson is None
+    assert gateway._client is None
+    assert gateway._last_authorization_state is None
