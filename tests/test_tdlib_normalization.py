@@ -51,6 +51,26 @@ def test_normalize_message_extracts_reaction_count_fallback():
     assert post["reactions"] == 4
 
 
+def test_normalize_message_excludes_paid_reactions():
+    msg = {
+        "id": 126,
+        "content": {"@type": "messageText", "text": {"@type": "formattedText", "text": "hello"}},
+        "interaction_info": {
+            "reaction_count": 1107,
+            "reactions": {
+                "reactions": [
+                    {"type": {"@type": "reactionTypePaid"}, "total_count": 1103},
+                    {"type": {"@type": "reactionTypeEmoji", "emoji": "🔥"}, "total_count": 4},
+                ]
+            },
+        },
+    }
+
+    post = normalize_message(msg, channel="@x", username="x")
+
+    assert post["reactions"] == 4
+
+
 class FakeGateway:
     def __init__(self, responses):
         self.responses = responses

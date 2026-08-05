@@ -84,15 +84,20 @@ def _reply_info(message: dict[str, Any]) -> dict[str, Any]:
 def _reaction_total(message: dict[str, Any]) -> int:
     interaction = message.get("interaction_info") or {}
     reactions = interaction.get("reactions") or message.get("reactions") or {}
+    entries = reactions.get("reactions", []) or reactions.get("results", [])
     total = 0
-    for reaction in reactions.get("reactions", []) or reactions.get("results", []):
+    for reaction in entries:
+        if (reaction.get("type") or {}).get("@type") == "reactionTypePaid":
+            continue
         total += int(
             reaction.get("total_count")
             or reaction.get("count")
             or reaction.get("reaction_count")
             or 0
         )
-    return int(total or interaction.get("reaction_count") or message.get("reaction_count") or 0)
+    if entries:
+        return int(total)
+    return int(interaction.get("reaction_count") or message.get("reaction_count") or 0)
 
 
 def normalize_chat(chat: dict[str, Any], handle: str | None = None) -> dict[str, Any]:
