@@ -241,6 +241,20 @@ chappe publish draft_123 --commit --actor codex
 Publishing requires `--commit` and an enabled local automation policy for the
 target channel. Every successful mutation writes an audit event.
 
+Read authorized chat history:
+
+```bash
+chappe chat search "project name" --limit 100
+chappe chat history @example_user --limit 1000
+chappe chat history --limit 1000 --from-message-id 123456789 -- -1001234567890
+```
+
+Search covers account-known titles and usernames. History returns text, captions,
+dates and sender/reply IDs without downloading media or marking messages as read.
+Pass `next_from_message_id` as the next page's exclusive cursor; IDs use TDLib's
+namespace and are not Telegram web message IDs. A short or empty page does not
+prove complete history. Keep private exports out of Git and public reports.
+
 ## JSON Contract
 
 Chappe emits compact JSON by default and diagnostics to stderr. Use `--pretty`
