@@ -158,6 +158,20 @@ def message(
     _run(ctx, operation)
 
 
+@chat_app.command("resolve-user")
+def resolve_user(
+    ctx: typer.Context,
+    user_id: int = typer.Argument(..., min=1, help="Known user ID for an authorized conversation."),
+) -> None:
+    """Resolve an existing private chat from a known sender without reading messages."""
+    def operation(gateway: TDLibGateway) -> dict[str, Any]:
+        # https://core.telegram.org/tdlib/docs/classtd_1_1td__api_1_1create_private_chat.html
+        # Despite the name, TDLib documents this as returning an existing chat.
+        raw = gateway.send({"@type": "createPrivateChat", "user_id": user_id, "force": False})
+        return {"chat": _chat_summary(raw), "messages_read": False}
+    _run(ctx, operation)
+
+
 @chat_app.command("download")
 def download(
     ctx: typer.Context,

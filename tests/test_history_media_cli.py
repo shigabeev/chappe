@@ -39,6 +39,12 @@ class Gateway:
                     "file_name": "../../unsafe.mp4", "duration": 3,
                 }},
             }
+        if request["@type"] == "createPrivateChat":
+            return {
+                "id": request["user_id"], "title": "Deleted Account",
+                "type": {"@type": "chatTypePrivate", "user_id": request["user_id"]},
+                "last_message": {"content": "do not disclose"},
+            }
         if request["@type"] == "downloadFile":
             return {"local": {"path": str(self.local), "is_downloading_completed": self.complete}}
         raise AssertionError(request)
@@ -71,6 +77,16 @@ def test_user_metadata_omits_phone(tmp_path, gateway):
     assert json.loads(result.stdout)["user"]["type"] == "userTypeDeleted"
     assert "hidden" not in result.stdout
     assert "phone" not in result.stdout
+
+
+def test_resolve_user_returns_only_chat_identity_without_reading_messages(tmp_path, gateway):
+    result = invoke(tmp_path, ["resolve-user", "7"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["chat"]["id"] == "7"
+    assert json.loads(result.stdout)["messages_read"] is False
+    assert "do not disclose" not in result.stdout
+    assert gateway.calls == [{"@type": "createPrivateChat", "user_id": 7, "force": False}]
+    assert gateway.closed
 
 
 def test_download_exports_exact_bytes_and_source_hash_with_audit(tmp_path, gateway, monkeypatch):
