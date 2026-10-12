@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+from pathlib import Path
+import shutil
 from typing import Any, Callable
 
 import typer
@@ -10,6 +13,7 @@ import typer
 from .errors import ChappeError, ExitCode
 from .output import emit, fail
 from .tdlib import TDLibGateway
+from .store import Store
 
 
 chat_app = typer.Typer(no_args_is_help=True, help="Find known chats and read text history.")
@@ -92,6 +96,130 @@ def search(
             "coverage_note": "Search matches known chats; it is not an exhaustive account inventory.",
         }
 
+    _run(ctx, operation)
+
+
+@chat_app.command("user")
+def user(
+    ctx: typer.Context,
+    user_id: int = typer.Argument(..., min=1, help="Known sender ID from a scoped chat export."),
+) -> None:
+    """Read minimal known-user identity metadata; never export phone or presence."""
+    def operation(gateway: TDLibGateway) -> dict[str, Any]:
+        raw = gateway.send({"@type": "getUser", "user_id": user_id})
+        return {"user": {
+            "id": str(raw["id"]),
+            "first_name": raw.get("first_name"),
+            "last_name": raw.get("last_name"),
+            "usernames": (raw.get("usernames") or {}).get("active_usernames", []),
+            "type": (raw.get("type") or {}).get("@type"),
+        }}
+    _run(ctx, operation)
+
+
+def _media(message: dict[str, Any]) -> dict[str, Any] | None:
+    content = message.get("content") or {}
+    for name in ("video", "audio", "document", "animation", "voice_note", "video_note"):
+        item = content.get(name)
+        if not isinstance(item, dict):
+            continue
+        file = item.get(name)
+        if isinstance(file, dict) and file.get("id"):
+            return {
+                "file_id": file["id"], "kind": name,
+                "file_name": item.get("file_name"), "mime_type": item.get("mime_type"),
+                "duration": item.get("duration"), "width": item.get("width"),
+                "height": item.get("height"), "size": file.get("size"),
+                "expected_size": file.get("expected_size"),
+            }
+    sizes = (content.get("photo") or {}).get("sizes") or []
+    if sizes:
+        item = max(sizes, key=lambda value: value.get("width", 0) * value.get("height", 0))
+        file = item.get("photo") or {}
+        if file.get("id"):
+            return {
+                "file_id": file["id"], "kind": "photo", "mime_type": "image/jpeg",
+                "width": item.get("width"), "height": item.get("height"),
+                "size": file.get("size"), "expected_size": file.get("expected_size"),
+            }
+    return None
+
+
+@chat_app.command("message")
+def message(
+    ctx: typer.Context,
+    chat_id: int = typer.Argument(..., help="Known numeric chat ID."),
+    message_id: int = typer.Argument(..., min=1, help="TDLib message ID from chat history."),
+) -> None:
+    """Get one message with media metadata; do not download or mark it read."""
+    def operation(gateway: TDLibGateway) -> dict[str, Any]:
+        raw = gateway.send({"@type": "getMessage", "chat_id": chat_id, "message_id": message_id})
+        return {"message": _message_summary(raw, chat_id), "media": _media(raw)}
+    _run(ctx, operation)
+
+
+@chat_app.command("download")
+def download(
+    ctx: typer.Context,
+    chat_id: int = typer.Argument(..., help="Known numeric chat ID."),
+    message_id: int = typer.Argument(..., min=1, help="TDLib message ID from chat history."),
+    output: Path = typer.Option(..., "--output", help="New destination file; never overwrite."),
+    max_bytes: int = typer.Option(250_000_000, "--max-bytes", min=1, help="Maximum media size."),
+    timeout: float = typer.Option(60.0, "--timeout", min=1, max=600, help="Download timeout seconds."),
+) -> None:
+    """Download the primary attachment of one message with hash and source provenance."""
+    output = output.expanduser().absolute()
+    if output.exists() or output.is_symlink():
+        fail(ChappeError("Destination already exists; choose a new file.", ExitCode.USAGE_ERROR))
+
+    def operation(gateway: TDLibGateway) -> dict[str, Any]:
+        raw = gateway.send({"@type": "getMessage", "chat_id": chat_id, "message_id": message_id})
+        media = _media(raw)
+        if media is None:
+            raise ChappeError("Message has no supported primary attachment.", ExitCode.NOT_FOUND)
+        known_size = max(media.get("size") or 0, media.get("expected_size") or 0)
+        if known_size > max_bytes:
+            raise ChappeError("Attachment exceeds --max-bytes.", ExitCode.USAGE_ERROR)
+        # Official TDLib downloadFile: synchronous returns only after completion/failure.
+        # The byte limit also bounds files whose size is initially unknown.
+        file = gateway.send({
+            "@type": "downloadFile", "file_id": media["file_id"], "priority": 1,
+            "offset": 0, "limit": max_bytes, "synchronous": True,
+        }, timeout=timeout)
+        local = file.get("local") or {}
+        if not local.get("is_downloading_completed") or not local.get("path"):
+            raise ChappeError("Download incomplete; no export was written.", ExitCode.TELEGRAM_ERROR)
+        source = Path(local["path"])
+        created = False
+        try:
+            size = source.stat().st_size
+            if size > max_bytes:
+                raise ChappeError("Downloaded file exceeds --max-bytes.", ExitCode.USAGE_ERROR)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            # x mode prevents races from overwriting an existing destination.
+            with source.open("rb") as src, output.open("xb") as dst:
+                created = True
+                shutil.copyfileobj(src, dst)
+            with output.open("rb") as fh:
+                hasher = hashlib.sha256()
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    hasher.update(block)
+                digest = hasher.hexdigest()
+        except OSError as exc:
+            if created:
+                output.unlink(missing_ok=True)
+            raise ChappeError("Could not export the attachment.", ExitCode.TELEGRAM_ERROR) from exc
+        payload = {
+            "message": _message_summary(raw, chat_id), "media": media,
+            "download": {"path": str(output), "size_bytes": size, "sha256": digest},
+        }
+        config = ctx.obj["config"]
+        Store(config.storage.sqlite_path).audit(
+            "chat_media_download",
+            {"source_id": payload["message"]["source_id"], **payload["download"]},
+            config.storage.audit_log_path,
+        )
+        return payload
     _run(ctx, operation)
 
 
